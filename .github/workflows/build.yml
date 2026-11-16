@@ -1,0 +1,25 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Cache face models
+        uses: actions/cache@v4
+        with:
+          path: src/Argus/models
+          key: models-${{ hashFiles('scripts/get-models.ps1') }}
+
+      - name: Build
+        run: dotnet build Argus.sln -c Release

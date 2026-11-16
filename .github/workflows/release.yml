@@ -1,0 +1,68 @@
+name: Release
+
+# Push a tag like v1.0.0 to build the installer + portable zip and publish a GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version
+        id: v
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") { $ver = "${{ inputs.version }}" }
+          else { $ver = "${{ github.ref_name }}".TrimStart("v") }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Publish (self-contained, win-x64)
+        run: >
+          dotnet publish src/Argus/Argus.csproj -c Release -r win-x64
+          --self-contained true
+          -p:Version=${{ steps.v.outputs.version }}
+          -o artifacts/publish
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/out | Out-Null
+          Compress-Archive -Path artifacts/publish/* -DestinationPath "artifacts/out/Argus-${{ steps.v.outputs.version }}-win-x64-portable.zip"
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=${{ steps.v.outputs.version }}" "/DSourceDir=..\artifacts\publish" installer\Argus.iss
+          Copy-Item "installer\Output\Argus-Setup-${{ steps.v.outputs.version }}.exe" artifacts/out/
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem artifacts/out | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content artifacts/out/SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: Argus ${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/out/*

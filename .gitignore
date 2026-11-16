@@ -1,0 +1,11 @@
+bin/
+obj/
+publish/
+artifacts/
+.vs/
+*.user
+*.suo
+*.pdb
+# Face models are downloaded by scripts/get-models.ps1 (SHA-256 verified)
+src/Argus/models/*.onnx
+installer/Output/
