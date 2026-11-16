@@ -67,9 +67,10 @@ namespace PresenceGuard
                         progress.Report(new EnrollProgress(samples.Count, target, hint, f));
                     }
                 }
+                FaceEngine.Diag?.Invoke($"Enroll ended with {samples.Count}/{target} samples (timeout, cancelled or camera stream stopped)");
                 return false;
             }
-            catch { return false; }
+            catch (Exception ex) { FaceEngine.Diag?.Invoke("Enroll failed: " + ex.Message); return false; }
         }
     }
 }

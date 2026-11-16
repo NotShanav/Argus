@@ -43,6 +43,8 @@ namespace PresenceGuard
 
             try
             {
+                IrCamera.Diag = m => log.Add(LogKind.Info, m);
+                FaceEngine.Diag = m => log.Add(LogKind.Info, m);
                 var cfg = new JsonConfigStore();
                 var modelsDir = Path.Combine(AppContext.BaseDirectory, "models");
                 IIrCamera cam = new IrCamera();

@@ -120,39 +120,95 @@ namespace PresenceGuard
             catch { }
         }
 
-        private static IrFrame? Convert(SoftwareBitmap bmp)
+        /// <summary>Optional diagnostics sink (wired to the activity log in Program).</summary>
+        public static Action<string>? Diag;
+        private static int _diagLeft = 6;
+
+        private static IrFrame? Convert(SoftwareBitmap bmp, bool allowFallback = true)
         {
-            int w = bmp.PixelWidth, h = bmp.PixelHeight, n = w * h;
-            if (n <= 0) return null;
-            var gray = new byte[n];
-            switch (bmp.BitmapPixelFormat)
+            int w = bmp.PixelWidth, h = bmp.PixelHeight;
+            if (w <= 0 || h <= 0) return null;
+
+            // Real row stride (rows can be padded, which shears/garbles the image if ignored)
+            int stride;
+            using (var lk = bmp.LockBuffer(BitmapBufferAccessMode.Read))
+                stride = lk.GetPlaneDescription(0).Stride;
+
+            var gray = new byte[w * h];
+            var fmt = bmp.BitmapPixelFormat;
+            switch (fmt)
             {
                 case BitmapPixelFormat.Gray8:
-                    bmp.CopyToBuffer(gray.AsBuffer());
-                    break;
                 case BitmapPixelFormat.Nv12:
+                case BitmapPixelFormat.Yuy2:
                     {
-                        var b = new byte[n * 3 / 2];
+                        int need = fmt == BitmapPixelFormat.Nv12 ? stride * h * 3 / 2 : stride * h;
+                        var b = new byte[need];
                         bmp.CopyToBuffer(b.AsBuffer());
-                        Buffer.BlockCopy(b, 0, gray, 0, n);
+                        if (fmt == BitmapPixelFormat.Yuy2)
+                        {
+                            for (int y = 0; y < h; y++)
+                                for (int x = 0; x < w; x++) gray[y * w + x] = b[y * stride + 2 * x]; // Y samples
+                        }
+                        else
+                        {
+                            for (int y = 0; y < h; y++) Buffer.BlockCopy(b, y * stride, gray, y * w, w);
+                        }
                         break;
                     }
                 case BitmapPixelFormat.Gray16:
                     {
-                        var b = new byte[n * 2];
+                        var b = new byte[stride * h];
                         bmp.CopyToBuffer(b.AsBuffer());
-                        for (int i = 0; i < n; i++) gray[i] = b[2 * i + 1];
+                        // IR sensors usually deliver 10/12-bit values inside 16 bits: pick the shift from the frame's peak
+                        int max = 0;
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++)
+                            {
+                                int v = b[y * stride + 2 * x] | (b[y * stride + 2 * x + 1] << 8);
+                                if (v > max) max = v;
+                            }
+                        int shift = max > 4095 ? 8 : max > 1023 ? 4 : max > 255 ? 2 : 0;
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++)
+                            {
+                                int v = (b[y * stride + 2 * x] | (b[y * stride + 2 * x + 1] << 8)) >> shift;
+                                gray[y * w + x] = (byte)(v > 255 ? 255 : v);
+                            }
                         break;
                     }
                 case BitmapPixelFormat.Bgra8:
                     {
-                        var b = new byte[n * 4];
+                        var b = new byte[stride * h];
                         bmp.CopyToBuffer(b.AsBuffer());
-                        for (int i = 0; i < n; i++)
-                            gray[i] = (byte)((114 * b[4 * i] + 587 * b[4 * i + 1] + 299 * b[4 * i + 2]) / 1000);
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++)
+                            {
+                                int i = y * stride + 4 * x;
+                                gray[y * w + x] = (byte)((114 * b[i] + 587 * b[i + 1] + 299 * b[i + 2]) / 1000);
+                            }
                         break;
                     }
-                default: return null;
+                default:
+                    if (allowFallback)
+                    {
+                        try
+                        {
+                            using var c = SoftwareBitmap.Convert(bmp, BitmapPixelFormat.Gray8);
+                            return Convert(c, false);
+                        }
+                        catch { }
+                    }
+                    if (_diagLeft > 0) { _diagLeft--; Diag?.Invoke("IR frame: unsupported pixel format " + fmt); }
+                    return null;
+            }
+
+            if (_diagLeft > 0)
+            {
+                _diagLeft--;
+                long sum = 0; int mx = 0, mn = 255;
+                foreach (var v in gray) { sum += v; if (v > mx) mx = v; if (v < mn) mn = v; }
+                Diag?.Invoke($"IR frame: {fmt} {w}x{h} stride={stride} min={mn} mean={sum / gray.Length} max={mx}");
             }
             return new IrFrame(w, h, gray, DateTime.UtcNow);
         }

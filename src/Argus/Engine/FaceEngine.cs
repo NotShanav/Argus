@@ -33,7 +33,7 @@ namespace PresenceGuard
                 if (!File.Exists(dp)) { LoadError = "Missing model: " + dp; return; }
                 if (!File.Exists(rp)) { LoadError = "Missing model: " + rp; return; }
                 _detPath = dp;
-                _det = FaceDetectorYN.Create(dp, "", new Size(_detW, _detH), 0.7f, 0.3f, 5000);
+                _det = FaceDetectorYN.Create(dp, "", new Size(_detW, _detH), 0.6f, 0.3f, 5000);
                 _net = CvDnn.ReadNetFromOnnx(rp);
                 if (_net == null || _net.Empty()) { LoadError = "Could not load SFace model"; _net = null; _det = null; return; }
                 ModelsLoaded = true;
@@ -107,16 +107,16 @@ namespace PresenceGuard
                 using var work = new Mat();
                 if (f.Width < 480) Cv2.Resize(gray, work, new Size(), 2, 2, InterpolationFlags.Linear);
                 else gray.CopyTo(work);
-                Cv2.MeanStdDev(work, out _, out var sd);
                 using var norm = new Mat();
                 Cv2.Normalize(work, norm, 0, 255, NormTypes.MinMax);
+                Cv2.MeanStdDev(norm, out _, out var sd);
                 using var bgr = new Mat();
                 Cv2.CvtColor(norm, bgr, ColorConversionCodes.GRAY2BGR);
                 // This OpenCvSharp build has no SetInputSize: re-create the detector when the frame size changes.
                 if (_det == null || _detW != bgr.Width || _detH != bgr.Height)
                 {
                     _det?.Dispose();
-                    _det = FaceDetectorYN.Create(_detPath, "", new Size(bgr.Width, bgr.Height), 0.7f, 0.3f, 5000);
+                    _det = FaceDetectorYN.Create(_detPath, "", new Size(bgr.Width, bgr.Height), 0.6f, 0.3f, 5000);
                     _detW = bgr.Width; _detH = bgr.Height;
                 }
                 var faces = new Mat();
@@ -155,14 +155,20 @@ namespace PresenceGuard
             catch { return new FaceResult(false, 0, 0f, 0f); }
         }
 
+        public static Action<string>? Diag;
+        private int _rejects;
+
         public float[]? ExtractEmbedding(IrFrame frame)
         {
             try
             {
-                var e = Process(frame, out _, out float q);
-                return e == null || q < 0.35f ? null : e;
+                var e = Process(frame, out int n, out float q);
+                if (e != null && q >= 0.25f) { _rejects = 0; return e; }
+                if (++_rejects % 20 == 1)
+                    Diag?.Invoke(n == 0 ? "Enroll: no face detected in IR frame" : $"Enroll: face rejected (quality {q:0.00})");
+                return null;
             }
-            catch { return null; }
+            catch (Exception ex) { Diag?.Invoke("Enroll: engine error: " + ex.Message); return null; }
         }
     }
 }
